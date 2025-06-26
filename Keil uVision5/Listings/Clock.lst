@@ -1,0 +1,251 @@
+C51 COMPILER V9.59.0.0   CLOCK                                                             06/24/2025 23:32:12 PAGE 1   
+
+
+C51 COMPILER V9.59.0.0, COMPILATION OF MODULE CLOCK
+OBJECT MODULE PLACED IN .\Objects\Clock.obj
+COMPILER INVOKED BY: C:\Keil_v5\C51\BIN\C51.EXE Clock.c OPTIMIZE(8,SPEED) BROWSE DEBUG OBJECTEXTEND PRINT(.\Listings\Clo
+                    -ck.lst) TABS(2) OBJECT(.\Objects\Clock.obj)
+
+line level    source
+
+   1          #include <reg51.h>
+   2          #include <intrins.h>
+   3          
+   4          #define uchar unsigned char
+   5          #define uint unsigned int
+   6          
+   7          // 按键定义
+   8          sbit K1 = P1^0;
+   9          sbit K2 = P1^1;
+  10          sbit K3 = P1^2;
+  11          sbit K4 = P1^3;
+  12          
+  13          // 控制信号
+  14          sbit LED   = P2^4;
+  15          sbit RELAY = P2^3;
+  16          sbit BEEP  = P2^5;
+  17          
+  18          sbit LCD_RS = P2^0;
+  19          sbit LCD_RW = P2^1;
+  20          sbit LCD_EN = P2^2;
+  21          #define LCD_DATA_PORT P3
+  22          
+  23          typedef struct {
+  24              uchar hour;
+  25              uchar min;
+  26          } Time;
+  27          
+  28          Time sysTime = {23, 58};
+  29          Time alarmTime = {0, 0};
+  30          bit beepEnable = 0;
+  31          bit alarmTrig = 0;
+  32          uchar mode = 0;  // 0=时钟显示，2=设置时钟，3=设置闹钟
+  33          
+  34          uchar alarm_view_timer = 0;
+  35          uint ms_counter = 0;
+  36          bit flash_flag = 0;
+  37          uint flash_cnt = 0;
+  38          
+  39          // 延时函数
+  40          void delay_ms(uint ms) {
+  41   1          uint i,j;
+  42   1          for(i=0;i<ms;i++)
+  43   1              for(j=0;j<120;j++);
+  44   1      }
+  45          
+  46          // LCD 控制
+  47          void lcd_write_cmd(uchar cmd) {
+  48   1          LCD_RS = 0; LCD_RW = 0;
+  49   1          LCD_DATA_PORT = cmd;
+  50   1          LCD_EN = 1; delay_ms(1);
+  51   1          LCD_EN = 0; delay_ms(1);
+  52   1      }
+  53          
+  54          void lcd_write_data(uchar dat) {
+C51 COMPILER V9.59.0.0   CLOCK                                                             06/24/2025 23:32:12 PAGE 2   
+
+  55   1          LCD_RS = 1; LCD_RW = 0;
+  56   1          LCD_DATA_PORT = dat;
+  57   1          LCD_EN = 1; delay_ms(1);
+  58   1          LCD_EN = 0; delay_ms(1);
+  59   1      }
+  60          
+  61          void lcd_init() {
+  62   1          lcd_write_cmd(0x38);
+  63   1          lcd_write_cmd(0x0C);
+  64   1          lcd_write_cmd(0x06);
+  65   1          lcd_write_cmd(0x01);
+  66   1          delay_ms(2);
+  67   1      }
+  68          
+  69          void lcd_set_cursor(uchar row, uchar col) {
+  70   1          lcd_write_cmd((row == 0 ? 0x80 : 0xC0) + col);
+  71   1      }
+  72          
+  73          void lcd_show_str(uchar row, uchar col, uchar *str) {
+  74   1          lcd_set_cursor(row, col);
+  75   1          while(*str) lcd_write_data(*str++);
+  76   1      }
+  77          
+  78          void lcd_show_time(Time t, uchar col, bit blink) {
+  79   1          lcd_set_cursor(1, col);
+  80   1          if(blink && flash_flag) {
+  81   2              lcd_show_str(1, col, "     ");
+  82   2          } else {
+  83   2              lcd_write_data(t.hour / 10 + '0');
+  84   2              lcd_write_data(t.hour % 10 + '0');
+  85   2              lcd_write_data(':');
+  86   2              lcd_write_data(t.min / 10 + '0');
+  87   2              lcd_write_data(t.min % 10 + '0');
+  88   2          }
+  89   1      }
+  90          
+  91          void update_time() {
+  92   1          sysTime.min++;
+  93   1          if(sysTime.min >= 60) {
+  94   2              sysTime.min = 0;
+  95   2              sysTime.hour++;
+  96   2              if(sysTime.hour >= 24) sysTime.hour = 0;
+  97   2          }
+  98   1      
+  99   1          if(sysTime.hour == alarmTime.hour && sysTime.min == alarmTime.min) {
+ 100   2              alarmTrig = 1;
+ 101   2              RELAY = 0;
+ 102   2          } else {
+ 103   2              RELAY = 1;
+ 104   2          }
+ 105   1      }
+ 106          
+ 107          void alarm_beep_ctrl() {
+ 108   1          uchar i;
+ 109   1          if(alarmTrig) {
+ 110   2              if(beepEnable) {
+ 111   3                  for(i=0; i<3; i++) {
+ 112   4                      BEEP = 0; delay_ms(100);
+ 113   4                      BEEP = 1; delay_ms(100);
+ 114   4                  }
+ 115   3              } else {
+ 116   3                  BEEP = 0; delay_ms(300); BEEP = 1;
+C51 COMPILER V9.59.0.0   CLOCK                                                             06/24/2025 23:32:12 PAGE 3   
+
+ 117   3              }
+ 118   2              alarmTrig = 0;
+ 119   2          } else {
+ 120   2              BEEP = 1;
+ 121   2          }
+ 122   1      }
+ 123          
+ 124          void key_scan() {
+ 125   1          uchar i;
+ 126   1      
+ 127   1          if(K1 == 0) {
+ 128   2              delay_ms(10); while(K1 == 0);
+ 129   2              if(mode == 0) mode = 2;
+ 130   2              else if(mode == 2) sysTime.hour = (sysTime.hour + 1) % 24;
+ 131   2              else if(mode == 3) alarmTime.hour = (alarmTime.hour + 1) % 24;
+ 132   2          }
+ 133   1      
+ 134   1          if(K2 == 0) {
+ 135   2              delay_ms(10); while(K2 == 0);
+ 136   2              if(mode == 0) {
+ 137   3                  mode = 1;
+ 138   3                  alarm_view_timer = 3;
+ 139   3              }
+ 140   2              else if(mode == 2) sysTime.min = (sysTime.min + 1) % 60;
+ 141   2              else if(mode == 3) alarmTime.min = (alarmTime.min + 1) % 60;
+ 142   2          }
+ 143   1      
+ 144   1          if(K3 == 0) {
+ 145   2              delay_ms(10); while(K3 == 0);
+ 146   2              if(mode == 1) mode = 0;
+ 147   2              else if(mode == 0) mode = 3;
+ 148   2              else mode = 0;
+ 149   2          }
+ 150   1      
+ 151   1          if(K4 == 0) {
+ 152   2              delay_ms(10); while(K4 == 0);
+ 153   2              beepEnable = !beepEnable;
+ 154   2              for(i=0;i<3;i++) { BEEP = 0; delay_ms(100); BEEP = 1; delay_ms(100); }
+ 155   2          }
+ 156   1      }
+ 157          
+ 158          void timer0_init() {
+ 159   1          TMOD = 0x01;
+ 160   1          TH0 = 0xFC; TL0 = 0x67;
+ 161   1          ET0 = 1; EA = 1; TR0 = 1;
+ 162   1      }
+ 163          
+ 164          void timer0_isr(void) interrupt 1 {
+ 165   1          TH0 = 0xFC; TL0 = 0x67;
+ 166   1          ms_counter++;
+ 167   1      
+ 168   1          if(ms_counter % 20 == 0) {
+ 169   2              LED = ~LED;
+ 170   2          }
+ 171   1      
+ 172   1          flash_cnt++;
+ 173   1          if(flash_cnt >= 500) {
+ 174   2              flash_cnt = 0;
+ 175   2              flash_flag = !flash_flag;
+ 176   2          }
+ 177   1      
+ 178   1          if(ms_counter >= 1000) {
+C51 COMPILER V9.59.0.0   CLOCK                                                             06/24/2025 23:32:12 PAGE 4   
+
+ 179   2              ms_counter = 0;
+ 180   2              update_time();
+ 181   2              alarm_beep_ctrl();
+ 182   2      
+ 183   2              if(alarm_view_timer > 0) {
+ 184   3                  alarm_view_timer--;
+ 185   3                  if(alarm_view_timer == 0 && mode == 1) {
+ 186   4                      mode = 0;
+ 187   4                  }
+ 188   3              }
+ 189   2          }
+ 190   1      }
+ 191          
+ 192          void display_update() {
+ 193   1          lcd_show_str(0, 0, "Clock Mode     ");
+ 194   1      
+ 195   1          if(mode == 0 || mode == 2) {
+ 196   2              lcd_show_str(1, 0, "Time  ");
+ 197   2              lcd_show_time(sysTime, 6, (mode == 2));
+ 198   2          } else if(mode == 1 || mode == 3) {
+ 199   2              lcd_show_str(1, 0, "Alarm ");
+ 200   2              lcd_show_time(alarmTime, 6, (mode == 3));
+ 201   2          }
+ 202   1      }
+ 203          
+ 204          void main() {
+ 205   1          lcd_init();
+ 206   1          timer0_init();
+ 207   1      
+ 208   1          RELAY = 1;
+ 209   1          BEEP = 1;
+ 210   1          LED = 0;
+ 211   1      
+ 212   1          // 上电欢迎界面
+ 213   1          lcd_show_str(0, 2, "H.I.T. CHINA");
+ 214   1          delay_ms(1000);
+ 215   1          lcd_write_cmd(0x01);  // 清屏
+ 216   1      
+ 217   1          while(1) {
+ 218   2              key_scan();
+ 219   2              display_update();
+ 220   2          }
+ 221   1      }
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =    887    ----
+   CONSTANT SIZE    =     49    ----
+   XDATA SIZE       =   ----    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     10       6
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =      3       1
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  0 WARNING(S),  0 ERROR(S)
